@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 
 import rdt
@@ -59,6 +60,8 @@ def handle_put(conn, root, request):
     expected = request.get("sha256")
     if not isinstance(size, int) or size < 0:
         raise ValueError("invalid size")
+    LOG.info("receiving %s: %d bytes = %d data packets",
+             request["name"], size, math.ceil(size / conn.cfg.mss))
     send_json(conn, status="ok", message="ready")
     temp = path + ".part"
     digest = hashlib.sha256()
@@ -92,6 +95,8 @@ def handle_get(conn, root, request):
         for block in iter(lambda: src.read(CHUNK), b""):
             digest.update(block)
     size = os.path.getsize(path)
+    LOG.info("sending %s: %d bytes = %d data packets",
+             request["name"], size, math.ceil(size / conn.cfg.mss))
     send_json(conn, status="ok", size=size, sha256=digest.hexdigest())
     with open(path, "rb") as src:
         for block in iter(lambda: src.read(CHUNK), b""):

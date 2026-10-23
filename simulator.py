@@ -76,7 +76,13 @@ class Simulator:
         return bytes(data)
 
     def _handle(self, raw, src):
-        """Apply impairments to one received datagram and schedule it."""
+        """Apply impairments to one received datagram and schedule it.
+
+        With ``-v`` exactly one line is logged per packet, giving its
+        final outcome: ``DELIVERED`` (forwarded unchanged), ``DROPPED``, or
+        a list of the impairments applied (``CORRUPTED``, ``DUPLICATED``,
+        ``DELAYED``).
+        """
         if src == self.server:
             dest, label = self.client, "server->client"
         else:
@@ -85,28 +91,35 @@ class Simulator:
         if dest is None:
             return
         self.stats["received"] += 1
+        number = self.stats["received"]
+        self.stats[label + " received"] += 1
         what = describe_packet(raw)
         if self.rng.random() < self.loss:
             self.stats["dropped"] += 1
-            LOG.debug("%s %s: DROPPED", label, what)
+            LOG.debug("#%d %s %s: DROPPED", number, label, what)
             return
+        events = []
         if self.rng.random() < self.corrupt:
             raw = self._corrupt_bytes(raw)
             self.stats["corrupted"] += 1
-            LOG.debug("%s %s: CORRUPTED", label, what)
+            events.append("CORRUPTED")
         copies = 1
         if self.rng.random() < self.duplicate:
             copies = 2
             self.stats["duplicated"] += 1
-            LOG.debug("%s %s: DUPLICATED", label, what)
+            events.append("DUPLICATED")
         for _ in range(copies):
             wait = self.delay + self.rng.uniform(0, self.jitter)
             if self.rng.random() < self.reorder:
                 wait += self.rng.uniform(0, self.reorder_delay)
                 self.stats["reordered"] += 1
-                LOG.debug("%s %s: DELAYED %.3fs", label, what, wait)
+                events.append("DELAYED %.3fs" % wait)
             heapq.heappush(self._queue, (time.monotonic() + wait,
                                          next(self._tiebreak), raw, dest))
+        if not events:
+            self.stats["delivered_unchanged"] += 1
+            events.append("DELIVERED")
+        LOG.debug("#%d %s %s: %s", number, label, what, ", ".join(events))
 
     def _flush_due(self):
         """Transmit every queued datagram whose release time has passed."""
@@ -115,6 +128,25 @@ class Simulator:
             _, _, raw, dest = heapq.heappop(self._queue)
             self.sock.sendto(raw, dest)
             self.stats["forwarded"] += 1
+
+    def summary(self):
+        """Return a multi-line summary of everything relayed so far."""
+        st = self.stats
+        rows = [
+            ("packets received from endpoints", st["received"]),
+            ("  client->server", st["client->server received"]),
+            ("  server->client", st["server->client received"]),
+            ("delivered unchanged", st["delivered_unchanged"]),
+            ("dropped", st["dropped"]),
+            ("corrupted", st["corrupted"]),
+            ("duplicated", st["duplicated"]),
+            ("delayed (reordering)", st["reordered"]),
+            ("datagrams forwarded (incl. duplicates)", st["forwarded"]),
+        ]
+        lines = ["", "======== simulator summary ========"]
+        lines += ["%-42s %d" % row for row in rows]
+        lines.append("===================================")
+        return "\n".join(lines)
 
     def run(self):
         """Relay packets until interrupted (Ctrl-C)."""
@@ -134,7 +166,7 @@ class Simulator:
         except KeyboardInterrupt:
             pass
         finally:
-            LOG.info("statistics: %s", dict(self.stats))
+            LOG.info(self.summary())
             self.sock.close()
 
 

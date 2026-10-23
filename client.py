@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -50,6 +51,13 @@ def sha256_of(path):
     return digest.hexdigest()
 
 
+def announce(action, name, size, mss):
+    """Print how many data packets a transfer needs."""
+    packets = math.ceil(size / mss)
+    print("%s %s: %d bytes = %d data packets (mss %d bytes)"
+          % (action, name, size, packets, mss))
+
+
 def progress(done, total, started):
     """Print a one-line progress indicator to stderr."""
     pct = 100.0 if total == 0 else 100.0 * done / total
@@ -63,6 +71,7 @@ def put_file(conn, path, remote_name):
     """Upload ``path`` to the server as ``remote_name``."""
     size = os.path.getsize(path)
     digest = sha256_of(path)
+    announce("uploading", remote_name, size, conn.cfg.mss)
     send_json(conn, cmd="PUT", name=remote_name, size=size, sha256=digest)
     read_response(conn)  # server is ready (or rejected the request)
     started = time.monotonic()
@@ -86,6 +95,7 @@ def get_file(conn, remote_name, dest):
     send_json(conn, cmd="GET", name=remote_name)
     meta = read_response(conn)
     size, expected = meta["size"], meta["sha256"]
+    announce("downloading", remote_name, size, conn.cfg.mss)
     temp = dest + ".part"
     digest = hashlib.sha256()
     started = time.monotonic()

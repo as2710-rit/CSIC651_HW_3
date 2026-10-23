@@ -489,6 +489,9 @@ class Connection:
                 if pkt.seq < self._rcv_base or pkt.seq in self._rcv_buf:
                     self.stats["duplicates"] += 1
                 else:
+                    if pkt.seq > self._rcv_base:
+                        LOG.debug("out-of-order packet seq=%d (expected "
+                                  "%d), buffered", pkt.seq, self._rcv_base)
                     self._rcv_buf[pkt.seq] = (pkt.ptype, pkt.payload)
                 while self._rcv_base in self._rcv_buf:
                     ptype, payload = self._rcv_buf.pop(self._rcv_base)
