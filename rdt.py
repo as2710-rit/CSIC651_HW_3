@@ -188,12 +188,13 @@ def describe_packet(raw):
 class _Entry:
     """A packet that has been sent but not yet acknowledged."""
 
-    __slots__ = ("raw", "sent_at", "retries")
+    __slots__ = ("raw", "sent_at", "retries", "size")
 
-    def __init__(self, raw, sent_at):
+    def __init__(self, raw, sent_at, size=0):
         self.raw = raw
         self.sent_at = sent_at
         self.retries = 0
+        self.size = size  # payload bytes carried (DATA packets only)
 
 
 class Connection:
@@ -311,6 +312,30 @@ class Connection:
             remaining -= len(chunk)
         return b"".join(parts)
 
+    @property
+    def bytes_acked(self):
+        """Payload bytes the peer has acknowledged so far."""
+        return self.stats["acked_bytes"]
+
+    def flush(self, on_wait=None):
+        """Block until every queued packet has been acknowledged.
+
+        Unlike :meth:`send`, which returns once data is *queued*, this
+        returns only when the peer has confirmed receipt, so the elapsed
+        time reflects the real transfer speed.
+
+        :param on_wait: optional callable invoked about every 50 ms while
+            waiting (used for progress display).
+        :raises ConnectionError: if the connection fails while waiting.
+        """
+        with self._cond:
+            while self._unsent or self._inflight:
+                if self._failed:
+                    raise ConnectionError(self._failed)
+                self._cond.wait(POLL)
+                if on_wait:
+                    on_wait()
+
     def recv_line(self, max_length=65536):
         """Receive one ``\\n``-terminated line.
 
@@ -414,7 +439,8 @@ class Connection:
                 seq = self._next_seq
                 self._next_seq += 1
                 raw = encode_packet(ptype, self.conn_id, seq, 0, payload)
-                self._inflight[seq] = _Entry(raw, now)
+                self._inflight[seq] = _Entry(
+                    raw, now, len(payload) if ptype == DATA else 0)
                 self.stats["sent"] += 1
                 self._cond.notify_all()
                 return raw
@@ -512,6 +538,7 @@ class Connection:
             done = [s for s in self._inflight
                     if s < pkt.seq or s == pkt.ack]
             for seq in done:
+                self.stats["acked_bytes"] += self._inflight[seq].size
                 del self._inflight[seq]
             if done:
                 self._cond.notify_all()

@@ -67,6 +67,13 @@ def progress(done, total, started):
     sys.stderr.flush()
 
 
+def report_speed(size, elapsed):
+    """Print the average transfer speed of a completed transfer."""
+    elapsed = max(elapsed, 1e-6)
+    print("transferred %d bytes in %.2f s = %.1f bytes/s (%.0f bits/s)"
+          % (size, elapsed, size / elapsed, 8 * size / elapsed))
+
+
 def put_file(conn, path, remote_name):
     """Upload ``path`` to the server as ``remote_name``."""
     size = os.path.getsize(path)
@@ -74,16 +81,22 @@ def put_file(conn, path, remote_name):
     announce("uploading", remote_name, size, conn.cfg.mss)
     send_json(conn, cmd="PUT", name=remote_name, size=size, sha256=digest)
     read_response(conn)  # server is ready (or rejected the request)
+    conn.flush()  # request fully acknowledged before timing starts
+    base = conn.bytes_acked
     started = time.monotonic()
-    sent = 0
+
+    def show():
+        progress(conn.bytes_acked - base, size, started)
+
     with open(path, "rb") as src:
         for block in iter(lambda: src.read(CHUNK), b""):
             conn.send(block)
-            sent += len(block)
-            progress(sent, size, started)
-    if size == 0:
-        progress(0, 0, started)
+            show()
+    conn.flush(on_wait=show)  # wait until the server acknowledged it all
+    elapsed = time.monotonic() - started
+    show()
     sys.stderr.write("\n")
+    report_speed(size, elapsed)
     result = read_response(conn)
     if result.get("sha256") != digest:
         raise RuntimeError("server stored a different file")
@@ -109,7 +122,9 @@ def get_file(conn, remote_name, dest):
             digest.update(chunk)
             remaining -= len(chunk)
             progress(size - remaining, size, started)
+    elapsed = time.monotonic() - started
     sys.stderr.write("\n")
+    report_speed(size, elapsed)
     if digest.hexdigest() != expected:
         os.remove(temp)
         raise RuntimeError("checksum mismatch, download discarded")

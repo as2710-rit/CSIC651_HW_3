@@ -25,7 +25,7 @@ import random
 import socket
 import time
 
-from rdt import MAX_DATAGRAM, describe_packet
+from rdt import HEADER, MAX_DATAGRAM, SYN, describe_packet
 
 LOG = logging.getLogger("simulator")
 
@@ -66,6 +66,23 @@ class Simulator:
         self.sock.bind(listen)
         self._queue = []
         self._tiebreak = itertools.count()
+        self._seen_ids = set()
+
+    def _announce_transfer(self, raw):
+        """Log a banner when a client opens a new connection.
+
+        Every transfer starts with a SYN carrying a fresh random connection
+        id, so an id not seen before marks a new data transfer.  The id is
+        read from the packet before any impairment is applied, so a
+        dropped or corrupted SYN still announces the transfer.
+        """
+        if len(raw) < HEADER.size:
+            return
+        ptype, conn_id = HEADER.unpack_from(raw)[:2]
+        if ptype == SYN and conn_id not in self._seen_ids:
+            self._seen_ids.add(conn_id)
+            LOG.info("\n-------- New data transfer #%d (connection id "
+                     "%08x) --------", len(self._seen_ids), conn_id)
 
     def _corrupt_bytes(self, raw):
         """Return ``raw`` with 1-3 random bytes altered."""
@@ -88,6 +105,7 @@ class Simulator:
         else:
             self.client = src
             dest, label = self.server, "client->server"
+            self._announce_transfer(raw)
         if dest is None:
             return
         self.stats["received"] += 1
@@ -133,6 +151,7 @@ class Simulator:
         """Return a multi-line summary of everything relayed so far."""
         st = self.stats
         rows = [
+            ("data transfers", len(self._seen_ids)),
             ("packets received from endpoints", st["received"]),
             ("  client->server", st["client->server received"]),
             ("  server->client", st["server->client received"]),
